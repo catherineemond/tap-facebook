@@ -247,51 +247,53 @@ def batch_record_failure(response):
     so it fails the sync process.'''
     raise response.error()
 
-# AdCreative is not an iterable stream as it uses the batch endpoint
-class AdCreative(Stream):
+class AdCreative(IncrementalStream):
     '''
     doc: https://developers.facebook.com/docs/marketing-api/reference/adgroup/adcreatives/
     '''
 
-    # Added retry_pattern to handle AttributeError raised from api_batch.execute() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
-    def sync_batches(self, stream_objects):
-        refs = load_shared_schema_refs()
-        schema = singer.resolve_schema_references(self.catalog_entry.schema.to_dict(), refs)
-        transformer = Transformer(pre_hook=transform_date_hook)
-
-        # Create the initial batch
-        api_batch = API.new_batch()
-        batch_count = 0
-
-        # This loop syncs minimal fb objects
-        for obj in stream_objects:
-            # Execute and create a new batch for every 50 added
-            if batch_count % 50 == 0:
-                api_batch.execute()
-                api_batch = API.new_batch()
-
-            # Add a call to the batch with the full object
-            obj.api_get(fields=self.fields(),
-                        batch=api_batch,
-                        success=partial(batch_record_success, stream=self, transformer=transformer, schema=schema),
-                        failure=batch_record_failure)
-            batch_count += 1
-
-        # Ensure the final batch is executed
-        api_batch.execute()
-
     key_properties = ['id']
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
-    # Added retry_pattern to handle AttributeError raised from account.get_ad_creatives() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, TypeError, AttributeError), max_tries=5, factor=5)
-    def get_adcreatives(self):
-        return self.account.get_ad_creatives(params={'limit': RESULT_RETURN_LIMIT})
+    # Added retry_pattern to handle AttributeError raised from account.get_adcreatives() below
+    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    def _call_get_adcreatives(self, params):
+        """
+        This is necessary because the functions that call this endpoint return
+        a generator, whose calls need decorated with a backoff.
+        """
+        return self.account.get_adcreatives(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
 
-    def sync(self):
-        adcreatives = self.get_adcreatives()
-        self.sync_batches(adcreatives)
+    def __iter__(self):
+        def do_request():
+            params = {'limit': RESULT_RETURN_LIMIT}
+            if self.current_bookmark:
+                params.update({'filtering': [{'field': 'adcreative.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
+            yield self._call_get_adcreatives(params)
+
+        def do_request_multiple():
+            params = {'limit': RESULT_RETURN_LIMIT}
+            bookmark_params = []
+            if self.current_bookmark:
+                bookmark_params.append({'field': 'adcreative.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp})
+            for del_info_filt in iter_delivery_info_filter('adcreative'):
+                params.update({'filtering': [del_info_filt] + bookmark_params})
+                filt_adcreatives = self._call_get_adcreatives(params)
+                yield filt_adcreatives
+
+        @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
+        # Added retry_pattern to handle AttributeError raised from request call below
+        @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+        def prepare_record(adcreative):
+            return adcreative.api_get(fields=self.fields()).export_all_data()
+
+        if CONFIG.get('include_deleted', 'false').lower() == 'true':
+            adcreatives = do_request_multiple()
+        else:
+            adcreatives = do_request()
+
+        for message in self._iterate(adcreatives, prepare_record):
+            yield message
 
 
 class Ads(IncrementalStream):
