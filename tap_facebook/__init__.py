@@ -798,9 +798,7 @@ def do_sync(account, catalog, state):
         bookmark_key = BOOKMARK_KEYS.get(stream.name)
         singer.write_schema(stream.name, schema, stream.key_properties, bookmark_key, stream.stream_alias)
 
-
-        # NB: The AdCreative stream is not an iterator
-        if stream.name in {'adcreative', 'leads'}:
+        if stream.name == 'leads':
             stream.sync()
             continue
 
