@@ -764,7 +764,7 @@ def initialize_stream(account, catalog_entry, state): # pylint: disable=too-many
     elif name == 'ads':
         return Ads(name, account, stream_alias, catalog_entry, state=state)
     elif name == 'adcreative':
-        return AdCreative(name, account, stream_alias, catalog_entry)
+        return AdCreative(name, account, stream_alias, catalog_entry, state=state)
     elif name == 'leads':
         return Leads(name, account, stream_alias, catalog_entry, state=state)
     else:
