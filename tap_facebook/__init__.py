@@ -247,7 +247,7 @@ def batch_record_failure(response):
     so it fails the sync process.'''
     raise response.error()
 
-class AdCreative(IncrementalStream):
+class AdCreative(Stream):
     '''
     doc: https://developers.facebook.com/docs/marketing-api/reference/adgroup/adcreatives/
     '''
@@ -257,29 +257,22 @@ class AdCreative(IncrementalStream):
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_adcreatives() below
     @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
-    def _call_get_adcreatives(self, params):
+    def _call_get_ad_creatives(self, params):
         """
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
-        return self.account.get_adcreatives(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        return self.account.get_ad_creatives(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
 
     def __iter__(self):
         def do_request():
             params = {'limit': RESULT_RETURN_LIMIT}
-            if self.current_bookmark:
-                params.update({'filtering': [{'field': 'adcreative.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
-            yield self._call_get_adcreatives(params)
+            yield self._call_get_ad_creatives(params)
 
         def do_request_multiple():
             params = {'limit': RESULT_RETURN_LIMIT}
-            bookmark_params = []
-            if self.current_bookmark:
-                bookmark_params.append({'field': 'adcreative.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp})
-            for del_info_filt in iter_delivery_info_filter('adcreative'):
-                params.update({'filtering': [del_info_filt] + bookmark_params})
-                filt_adcreatives = self._call_get_adcreatives(params)
-                yield filt_adcreatives
+            adcreatives = self._call_get_ad_creatives(params)
+            yield adcreatives
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from request call below
@@ -292,8 +285,10 @@ class AdCreative(IncrementalStream):
         else:
             adcreatives = do_request()
 
-        for message in self._iterate(adcreatives, prepare_record):
-            yield message
+        for recordset in adcreatives:
+            for adcreative in recordset:
+                record = prepare_record(adcreative)
+                yield {'record': record}
 
 
 class Ads(IncrementalStream):
@@ -764,7 +759,7 @@ def initialize_stream(account, catalog_entry, state): # pylint: disable=too-many
     elif name == 'ads':
         return Ads(name, account, stream_alias, catalog_entry, state=state)
     elif name == 'adcreative':
-        return AdCreative(name, account, stream_alias, catalog_entry, state=state)
+        return AdCreative(name, account, stream_alias, catalog_entry)
     elif name == 'leads':
         return Leads(name, account, stream_alias, catalog_entry, state=state)
     else:
